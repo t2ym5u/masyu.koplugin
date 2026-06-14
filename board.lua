@@ -238,19 +238,81 @@ end
 
 function MasyuBoard:_checkWin()
     local n = self.n
-    local sol_count = #self.solution_loop
-    local user_count = 0
+    local up = self.user_path
+    local dirs = {{-1,0},{1,0},{0,-1},{0,1}}
+
+    -- Count marked cells and precompute marked-neighbor count per cell
+    local marked = 0
+    local nb = {}
+    for r = 1, n do
+        nb[r] = {}
+        for c = 1, n do
+            nb[r][c] = 0
+            if up[r][c] then marked = marked + 1 end
+        end
+    end
+    if marked < 4 then self.won = false; return end
+
     for r = 1, n do
         for c = 1, n do
-            if self.user_path[r][c] then user_count = user_count + 1 end
+            if up[r][c] then
+                for _, d in ipairs(dirs) do
+                    local nr, nc = r + d[1], c + d[2]
+                    if nr >= 1 and nr <= n and nc >= 1 and nc <= n and up[nr][nc] then
+                        nb[r][c] = nb[r][c] + 1
+                    end
+                end
+                -- Valid closed loop: every marked cell has exactly 2 marked neighbours
+                if nb[r][c] ~= 2 then self.won = false; return end
+            end
         end
     end
-    if user_count ~= sol_count then self.won = false; return end
-    for _, cell in ipairs(self.solution_loop) do
-        if not self.user_path[cell[1]][cell[2]] then
-            self.won = false; return
+
+    -- Returns the two direction vectors toward marked neighbours of (r,c)
+    local function arms(r, c)
+        local a = {}
+        for _, d in ipairs(dirs) do
+            local nr, nc = r + d[1], c + d[2]
+            if nr >= 1 and nr <= n and nc >= 1 and nc <= n and up[nr][nc] then
+                a[#a+1] = d
+            end
+        end
+        return a
+    end
+
+    -- true if cell makes a 90° turn (the two arm directions are not collinear)
+    local function isTurn(r, c)
+        local a = arms(r, c)
+        return #a == 2 and not (a[1][1] == -a[2][1] and a[1][2] == -a[2][2])
+    end
+
+    local function isStraight(r, c)
+        local a = arms(r, c)
+        return #a == 2 and a[1][1] == -a[2][1] and a[1][2] == -a[2][2]
+    end
+
+    -- Check pearl constraints
+    for r = 1, n do
+        for c = 1, n do
+            local clue = self.clues[r][c]
+            if clue == CELL_BLACK then
+                -- Black: path passes through, turns here, both arms extend straight ≥1 cell
+                if not up[r][c] or not isTurn(r, c) then self.won = false; return end
+                for _, d in ipairs(arms(r, c)) do
+                    if not isStraight(r + d[1], c + d[2]) then self.won = false; return end
+                end
+            elseif clue == CELL_WHITE then
+                -- White: path passes through straight, at least one adjacent cell turns
+                if not up[r][c] or not isStraight(r, c) then self.won = false; return end
+                local has_turn = false
+                for _, d in ipairs(arms(r, c)) do
+                    if isTurn(r + d[1], c + d[2]) then has_turn = true; break end
+                end
+                if not has_turn then self.won = false; return end
+            end
         end
     end
+
     self.won = true
 end
 

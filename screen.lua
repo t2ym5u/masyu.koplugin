@@ -35,6 +35,32 @@ local DeviceScreen = Device.screen
 
 local GRID_SIZES = MasyuBoard.SIZES
 
+local GAME_RULES_EN = _([[
+Masyu — Rules
+
+Draw a single closed loop that passes through every pearl circle.
+
+White pearl: the loop must go straight through the cell, and it must turn in at least one of the two cells immediately adjacent on either side.
+Black pearl: the loop must turn 90° in the cell, and it must go straight through both cells immediately adjacent on either side of the turn.
+
+Additional rules:
+• The loop cannot branch or cross itself.
+• Every pearl must be visited exactly once.
+]])
+
+local GAME_RULES_FR = [[
+Masyu — Règles
+
+Tracez une boucle fermée unique passant par tous les cercles-perles.
+
+Perle blanche : la boucle doit passer en ligne droite à travers la case, et doit tourner dans au moins l'une des deux cases immédiatement adjacentes de part et d'autre.
+Perle noire : la boucle doit tourner à 90° dans la case, et doit passer en ligne droite dans les deux cases immédiatement adjacentes de part et d'autre du virage.
+
+Règles supplémentaires :
+• La boucle ne peut pas se ramifier ni se croiser.
+• Chaque perle doit être visitée exactement une fois.
+]]
+
 local MasyuScreen = ScreenBase:extend{}
 
 function MasyuScreen:init()
@@ -84,7 +110,8 @@ function MasyuScreen:buildLayout()
                   callback = function() self:openGridMenu() end },
                 { id   = "reveal_button", text = self:getRevealButtonText(),
                   callback = function() self:onToggleReveal() end },
-                self:makeCloseButtonConfig(),
+                self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR),
+            self:makeCloseButtonConfig(),
             },
         },
     }

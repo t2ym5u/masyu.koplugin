@@ -111,7 +111,7 @@ function MasyuScreen:buildLayout()
                 { id   = "reveal_button", text = self:getRevealButtonText(),
                   callback = function() self:onToggleReveal() end },
                 self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR),
-            self:makeCloseButtonConfig(),
+                self:makeCloseButtonConfig(),
             },
         },
     }

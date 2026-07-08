@@ -23,7 +23,7 @@ local Size            = require("ui/size")
 local UIManager       = require("ui/uimanager")
 local VerticalGroup   = require("ui/widget/verticalgroup")
 local VerticalSpan    = require("ui/widget/verticalspan")
-local _               = require("gettext")
+local _               = require("i18n")
 local T               = require("ffi/util").template
 
 local ScreenBase        = lrequire_common("screen_base")
@@ -201,16 +201,29 @@ function MasyuScreen:onToggleReveal()
 end
 
 function MasyuScreen:showRulesHint()
-    self:showMessage(_(
-        "Masyu rules:\n" ..
-        "Draw a single closed loop through all circles.\n\n" ..
-        "White circle: the loop must go STRAIGHT through it,\n" ..
-        "and must turn at least one step before or after.\n\n" ..
-        "Black circle: the loop must TURN 90\xC2\xB0 at it,\n" ..
-        "and must go straight for at least one step on each side.\n\n" ..
-        "Tap: toggle a cell as part of the loop.\n" ..
-        "The status bar shows circles touched by your path."
-    ), 12)
+    if _.lang() == "fr" then
+        self:showMessage(
+            "Règles Masyu :\n" ..
+            "Tracez une boucle fermée passant par tous les cercles.\n\n" ..
+            "Cercle blanc : la boucle passe en LIGNE DROITE,\n" ..
+            "et doit tourner dans au moins un pas avant ou après.\n\n" ..
+            "Cercle noir : la boucle TOURNE à 90\xC2\xB0 dessus,\n" ..
+            "et doit aller en ligne droite sur au moins un pas de chaque côté.\n\n" ..
+            "Appuyez : ajouter/retirer un segment de la boucle.\n" ..
+            "La barre de statut montre les cercles touchés par votre tracé."
+        , 12)
+    else
+        self:showMessage(_(
+            "Masyu rules:\n" ..
+            "Draw a single closed loop through all circles.\n\n" ..
+            "White circle: the loop must go STRAIGHT through it,\n" ..
+            "and must turn at least one step before or after.\n\n" ..
+            "Black circle: the loop must TURN 90\xC2\xB0 at it,\n" ..
+            "and must go straight for at least one step on each side.\n\n" ..
+            "Tap: toggle a cell as part of the loop.\n" ..
+            "The status bar shows circles touched by your path."
+        ), 12)
+    end
 end
 
 function MasyuScreen:openGridMenu()

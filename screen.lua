@@ -46,6 +46,8 @@ Black pearl: the loop must turn 90° in the cell, and it must go straight throug
 Additional rules:
 • The loop cannot branch or cross itself.
 • Every pearl must be visited exactly once.
+
+Tap a cell to toggle it as part of the loop. The status bar shows which circles are touched by your path.
 ]])
 
 local GAME_RULES_FR = [[
@@ -59,6 +61,8 @@ Perle noire : la boucle doit tourner à 90° dans la case, et doit passer en lig
 Règles supplémentaires :
 • La boucle ne peut pas se ramifier ni se croiser.
 • Chaque perle doit être visitée exactement une fois.
+
+Appuyez sur une case pour l'ajouter ou la retirer de la boucle. La barre de statut montre les cercles touchés par votre tracé.
 ]]
 
 local MasyuScreen = ScreenBase:extend{}
@@ -100,23 +104,14 @@ function MasyuScreen:buildLayout()
         and math.max(right_panel_width - Size.span.horizontal_default, 100)
         or  math.floor(sw * 0.9)
 
-    local top_buttons = ButtonTable:new{
-        shrink_unneeded_width = true,
-        width   = button_width,
-        buttons = {
-            {
-                { text = _("New"),   callback = function() self:onNewGame() end },
-                { id   = "grid_button", text = self:getGridButtonText(),
-                  callback = function() self:openGridMenu() end },
-                { id   = "reveal_button", text = self:getRevealButtonText(),
-                  callback = function() self:onToggleReveal() end },
-                self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR),
-                self:makeCloseButtonConfig(),
-            },
-        },
-    }
-    self.grid_button   = top_buttons:getButtonById("grid_button")
-    self.reveal_button = top_buttons:getButtonById("reveal_button")
+    local title_bar = self:buildTitleBar(_("Masyu"), function()
+        return {
+            { text = _("New game"),            callback = function() self:onNewGame() end },
+            { text = self:getGridButtonText(), callback = function() self:openGridMenu() end },
+            { text = self:getRevealButtonText(), callback = function() self:onToggleReveal() end },
+            self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR),
+        }
+    end)
 
     local bottom_buttons = ButtonTable:new{
         shrink_unneeded_width = true,
@@ -124,7 +119,6 @@ function MasyuScreen:buildLayout()
         buttons = {
             {
                 { text = _("Clear"), callback = function() self:onClear() end },
-                { text = _("Rules"), callback = function() self:showRulesHint() end },
             },
         },
     }
@@ -132,33 +126,26 @@ function MasyuScreen:buildLayout()
     if is_landscape then
         local right_panel = VerticalGroup:new{
             align = "center",
-            top_buttons,
-            VerticalSpan:new{ width = Size.span.vertical_large },
             self.status_text,
             VerticalSpan:new{ width = Size.span.vertical_large },
             bottom_buttons,
         }
-        self.layout = HorizontalGroup:new{
+        local content = HorizontalGroup:new{
             align  = "center",
             board_frame,
             HorizontalSpan:new{ width = Size.span.horizontal_default },
             right_panel,
         }
+        self:buildLandscapeLayout(title_bar, content)
     else
-        self.layout = VerticalGroup:new{
+        local content = VerticalGroup:new{
             align = "center",
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            top_buttons,
-            VerticalSpan:new{ width = Size.span.vertical_large },
             board_frame,
             VerticalSpan:new{ width = Size.span.vertical_large },
             self.status_text,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            bottom_buttons,
-            VerticalSpan:new{ width = Size.span.vertical_large },
         }
+        self:buildPortraitLayout(title_bar, content, bottom_buttons)
     end
-    self[1] = self.layout
     self:updateStatus()
 end
 
@@ -198,32 +185,6 @@ function MasyuScreen:onToggleReveal()
         self.reveal_button:setText(self:getRevealButtonText(), self.reveal_button.width)
     end
     self:updateStatus()
-end
-
-function MasyuScreen:showRulesHint()
-    if _.lang() == "fr" then
-        self:showMessage(
-            "Règles Masyu :\n" ..
-            "Tracez une boucle fermée passant par tous les cercles.\n\n" ..
-            "Cercle blanc : la boucle passe en LIGNE DROITE,\n" ..
-            "et doit tourner dans au moins un pas avant ou après.\n\n" ..
-            "Cercle noir : la boucle TOURNE à 90\xC2\xB0 dessus,\n" ..
-            "et doit aller en ligne droite sur au moins un pas de chaque côté.\n\n" ..
-            "Appuyez : ajouter/retirer un segment de la boucle.\n" ..
-            "La barre de statut montre les cercles touchés par votre tracé."
-        , 12)
-    else
-        self:showMessage(_(
-            "Masyu rules:\n" ..
-            "Draw a single closed loop through all circles.\n\n" ..
-            "White circle: the loop must go STRAIGHT through it,\n" ..
-            "and must turn at least one step before or after.\n\n" ..
-            "Black circle: the loop must TURN 90\xC2\xB0 at it,\n" ..
-            "and must go straight for at least one step on each side.\n\n" ..
-            "Tap: toggle a cell as part of the loop.\n" ..
-            "The status bar shows circles touched by your path."
-        ), 12)
-    end
 end
 
 function MasyuScreen:openGridMenu()

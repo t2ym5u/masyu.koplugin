@@ -88,11 +88,23 @@ local function perturbLoop(loop, n, passes)
             and isConsecutive(ic, id, total)
         then
             -- Reverse the segment between the two pairs to rewire the loop.
+            -- Standard 2-opt: edge A arrives at i2, edge B departs from j1;
+            -- swapping edges A and B for edges (pred(i2),j1) and (i2,succ(j1))
+            -- requires reversing the closed segment [i2, j1], not (i2, j1].
             local i2 = (ia % total + 1 == ib) and ib or ia
             local j1 = (ic % total + 1 == id) and ic or id
-            local seg_start = i2 % total + 1
+            -- The reversal alone always keeps a single valid cycle, but the
+            -- two NEW edges it creates -- (pred(i2), j1) and (i2, succ(j1))
+            -- -- are only grid-adjacent (same column) when the top edge's
+            -- arrival side matches the bottom edge's departure side (both
+            -- "right" corners: TL->TR paired with BL->BR, or both "left":
+            -- TR->TL paired with BR->BL). The other two traversal-direction
+            -- combinations would relink to a diagonal, non-adjacent pair,
+            -- shattering the loop -- skip the move in that case.
+            local valid_orientation = (i2 == ib and j1 == ic) or (i2 == ia and j1 == id)
+            local seg_start = i2
             local seg_end   = j1
-            if seg_start <= seg_end then
+            if valid_orientation and seg_start <= seg_end then
                 local left, right = seg_start, seg_end
                 while left < right do
                     loop[left], loop[right] = loop[right], loop[left]
@@ -158,8 +170,12 @@ local function placeCircles(loop, cell_types, n, target_count)
     shuffle(black_cands)
     shuffle(white_cands)
 
-    local n_black = math.max(1, math.min(#black_cands, math.floor(target_count / 2)))
-    local n_white = math.max(1, math.min(#white_cands, target_count - n_black))
+    -- Clamp to available candidates first, then try to reach at least 1 of
+    -- each type -- forcing a floor of 1 *before* clamping (the previous
+    -- order) indexed past the end of an empty candidate list when a loop
+    -- shape happened to produce zero turn-cells or zero straight-cells.
+    local n_black = math.min(#black_cands, math.max(1, math.floor(target_count / 2)))
+    local n_white = math.min(#white_cands, math.max(1, target_count - n_black))
 
     for i = 1, n_black do
         clues[black_cands[i][1]][black_cands[i][2]] = CELL_BLACK

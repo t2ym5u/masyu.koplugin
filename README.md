@@ -34,6 +34,14 @@ Draw a single closed loop passing through all pearl circles. **White pearl**: th
 | Change grid size | Tap **Grid** |
 | Show rules | Tap **Rules** |
 
+## Known limitations
+
+At 6×6, every generated puzzle is guaranteed to have exactly one solution. At
+8×8, most puzzles do too, but proving uniqueness there is computationally
+expensive and generation is capped at a couple of seconds — occasionally an
+8×8 puzzle ships without that guarantee (still fully valid and completable,
+just not proven to be the only possible solution).
+
 ## License
 
 GPL-3.0 — see [LICENSE](LICENSE).

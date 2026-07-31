@@ -26,8 +26,8 @@ local MasyuBoard = lrequire("board")
 
 local C_BG        = Blitbuffer.COLOR_WHITE
 local C_GRID      = Blitbuffer.COLOR_GRAY_6
-local C_PATH_BG   = Blitbuffer.COLOR_GRAY_C   -- user-marked path cell
-local C_SOL_PATH  = Blitbuffer.COLOR_GRAY_8   -- solution path line color
+local C_PATH_BG   = Blitbuffer.COLOR_LIGHT_GRAY   -- user-marked path cell
+local C_SOL_PATH  = Blitbuffer.COLOR_DARK_GRAY   -- solution path line color
 local C_CIRCLE_W  = Blitbuffer.COLOR_WHITE    -- white circle fill
 local C_BORDER    = Blitbuffer.COLOR_BLACK    -- circle border / black circle fill
 

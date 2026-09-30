@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-09-30
+
+### Added
+- **Hint** button, working in the loop rather than in cells. Two taps: the first names a cell the loop passes through, the second marks it.
+
 ## [1.1.10] - 2026-07-31
 
 ### Fixed

@@ -8,6 +8,7 @@ local function lrequire_common(name)
 end
 
 local grid_utils    = lrequire_common("grid_utils")
+local Hint       = lrequire_common("hint")
 local emptyGrid     = grid_utils.emptyGrid
 local emptyBoolGrid = grid_utils.emptyBoolGrid
 local copyGrid      = grid_utils.copyGrid
@@ -674,6 +675,38 @@ function MasyuBoard:countUserPath()
     end
     return count
 end
+
+-- The loop is stored as an ordered list of cells, but what the player toggles
+-- is a plain boolean per cell, so the hint only needs to know which cells the
+-- loop passes through. Rebuilt on demand rather than cached: generate()
+-- replaces solution_loop wholesale and a stale cache would quietly hint at the
+-- previous puzzle.
+function MasyuBoard:_loopGrid()
+    local g = {}
+    for r = 1, self.n do
+        g[r] = {}
+        for c = 1, self.n do g[r][c] = false end
+    end
+    for _, cell in ipairs(self.solution_loop or {}) do
+        g[cell[1]][cell[2]] = true
+    end
+    return g
+end
+
+-- tapCell only toggles, so the hint needs a way to set a cell outright.
+function MasyuBoard:setPathCell(r, c, on)
+    if r < 1 or r > self.n or c < 1 or c > self.n then return false end
+    self.user_path[r][c] = on and true or false
+    self:_checkWin()
+    return true
+end
+
+Hint.install(MasyuBoard, {
+    getUser     = function(b, r, c) return b.user_path[r][c] end,
+    getSolution = function(b, r, c) return b:_loopGrid()[r][c] end,
+    setCell     = function(b, r, c, v) return b:setPathCell(r, c, v) end,
+    blank       = false,
+})
 
 function MasyuBoard:serialize()
     local n = self.n

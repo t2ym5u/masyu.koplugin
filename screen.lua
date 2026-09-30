@@ -121,6 +121,7 @@ function MasyuScreen:buildLayout()
         buttons = {
             {
                 { text = _("Clear"), callback = function() self:onClear() end },
+                { text = _("Hint"), callback = function() self:onHint() end },
             },
         },
     }

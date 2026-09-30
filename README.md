@@ -13,6 +13,7 @@ Draw a single closed loop passing through all pearl circles. **White pearl**: th
 ## Features
 
 - **Two grid sizes** — 6×6, 8×8
+- **Hint** — two taps, working in the loop rather than cells
 - **Reveal solution** — show the generated loop at any time
 - **Auto-save** — puzzle state saved and restored on next launch
 

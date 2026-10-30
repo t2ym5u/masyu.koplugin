@@ -128,9 +128,11 @@ function MasyuBoardWidget:paintTo(bb, x, y)
     local thin  = Size.line.thin  or 1
     local thick = Size.line.thick or 2
     for i = 0, n do
-        local lw = (i == 0 or i == n) and thick or thin
-        drawLine(bb, x + math.floor(i * cell), y, lw, self.dimen.h, C_BORDER)
-        drawLine(bb, x, y + math.floor(i * cell), self.dimen.w, lw, C_BORDER)
+        local lw  = (i == 0 or i == n) and thick or thin
+        -- Clamp so the closing line is drawn inside the widget, not past it.
+        local pos = math.min(math.floor(i * cell), self.dimen.w - lw)
+        drawLine(bb, x + pos, y, lw, self.dimen.h, C_BORDER)
+        drawLine(bb, x, y + pos, self.dimen.w, lw, C_BORDER)
     end
 
     -- Draw circles (clue cells)

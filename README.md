@@ -29,10 +29,10 @@ Draw a single closed loop passing through all pearl circles. **White pearl**: th
 | Action | How |
 |--------|-----|
 | Toggle a cell in/out of the loop | Tap it |
-| Reveal / hide the solution | Tap **Show** / **Hide** |
+| Reveal / hide the solution | Tap **Show solution** / **Hide solution** |
 | Clear your path | Tap **Clear** |
 | New puzzle | Tap **New game** |
-| Change grid size | Tap **Grid** |
+| Change grid size | Tap **Size** |
 | Show rules | Tap **Rules** |
 
 ## Known limitations

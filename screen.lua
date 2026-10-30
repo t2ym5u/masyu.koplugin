@@ -14,7 +14,6 @@ local function lrequire_common(name)
     return package.loaded[key]
 end
 
-local ButtonTable     = require("ui/widget/buttontable")
 local Device          = require("device")
 local FrameContainer  = require("ui/widget/container/framecontainer")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
@@ -82,29 +81,7 @@ function MasyuScreen:serializeState()
 end
 
 function MasyuScreen:buildLayout()
-    local sw           = DeviceScreen:getWidth()
     local is_landscape = self:isLandscape()
-
-    self.board_widget = MasyuBoardWidget:new{
-        board        = self.board,
-        onCellAction = function(r, c)
-            self:onCellAction(r, c)
-        end,
-    }
-
-    local board_frame = FrameContainer:new{
-        padding = Size.padding.large,
-        margin  = Size.margin.default,
-        self.board_widget,
-    }
-
-    local board_frame_size  = self.board_widget.size + (Size.padding.large + Size.margin.default) * 2
-    local right_panel_width = sw - board_frame_size - Size.span.horizontal_default
-    local button_width = is_landscape
-        and math.max(right_panel_width - Size.span.horizontal_default, 100)
-        or  math.floor(sw * 0.9)
-
-    self.status_text:setMaxWidth(is_landscape and button_width or board_frame_size)
 
     local title_bar = self:buildTitleBar(_("Masyu"), function()
         return {
@@ -115,39 +92,47 @@ function MasyuScreen:buildLayout()
         }
     end)
 
-    local bottom_buttons = ButtonTable:new{
-        shrink_unneeded_width = true,
-        width   = button_width,
-        buttons = {
-            {
-                { text = _("Clear"), callback = function() self:onClear() end },
-                { text = _("Hint"), callback = function() self:onHint() end },
-            },
-        },
+    self.status_text:setMaxWidth(self:getControlsWidth())
+    local controls = VerticalGroup:new{
+        align = "center",
+        self.status_text,
+        VerticalSpan:new{ width = Size.span.vertical_large },
+        self:buildActionBar({
+            { text = _("Clear"), callback = function() self:onClear() end },
+            { text = _("Hint"),  callback = function() self:onHint() end },
+        }),
+    }
+
+    -- The widget draws its own thick outer grid line, so the frame stays
+    -- borderless: one visible edge around the board, not two.
+    local frame_pad   = Size.padding.large
+    local frame_extra = 2 * frame_pad
+    local budget_w, budget_h = self:getBoardBudget(title_bar, controls)
+    self.board_widget = MasyuBoardWidget:new{
+        board        = self.board,
+        max_size     = math.min(budget_w, budget_h) - frame_extra,
+        onCellAction = function(r, c)
+            self:onCellAction(r, c)
+        end,
+    }
+    local board_frame = FrameContainer:new{
+        padding    = frame_pad,
+        margin     = 0,
+        bordersize = 0,
+        self.board_widget,
     }
 
     if is_landscape then
-        local right_panel = VerticalGroup:new{
-            align = "center",
-            self.status_text,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            bottom_buttons,
-        }
         local content = HorizontalGroup:new{
-            align  = "center",
+            align = "center",
             board_frame,
-            HorizontalSpan:new{ width = Size.span.horizontal_default },
-            right_panel,
+            HorizontalSpan:new{ width = self:getGutter() },
+            controls,
         }
         self:buildLandscapeLayout(title_bar, content)
     else
-        local content = VerticalGroup:new{
-            align = "center",
-            board_frame,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            self.status_text,
-        }
-        self:buildPortraitLayout(title_bar, content, bottom_buttons)
+        self:buildPortraitLayout(title_bar, board_frame,
+            VerticalGroup:new{ align = "center", controls, VerticalSpan:new{ width = self:getGutter() } })
     end
     self:updateStatus()
 end
@@ -196,7 +181,7 @@ function MasyuScreen:openGridMenu()
         sizes[#sizes+1] = { id = sz, text = sz .. "\xC3\x97" .. sz }
     end
     MenuHelper.openSizeMenu{
-        title     = _("Select grid size"),
+        title     = _("Select size"),
         sizes     = sizes,
         current   = self.plugin:getSetting("grid_n", MasyuBoard.DEFAULT_N),
         parent    = self,
@@ -220,18 +205,27 @@ function MasyuScreen:updateStatus(msg)
     else
         local sat, total = self.board:countCirclesSatisfied()
         local path_count = self.board:countUserPath()
-        status = T(_("Circles on path: %1/%2  \xC2\xB7  Path cells: %3"),
-            sat, total, path_count)
+        status = self:joinStatus(
+            T("%1×%1", self.board.n),
+            T(_("Pearls: %1/%2"), sat, total),
+            T(_("Path: %1"), path_count))
     end
     ScreenBase.updateStatus(self, status)
+    -- Every move, hint, undo and reveal ends here, so the bar follows the board.
+    self:refreshActionBar()
+end
+
+-- Showing the solution can be hidden again, so only solving it ends the round.
+function MasyuScreen:isRoundOver()
+    return self.board.won
 end
 
 function MasyuScreen:getGridButtonText()
-    return T(_("Grid: %1"), self.board.n .. "\xC3\x97" .. self.board.n)
+    return T(_("Size: %1"), self.board.n .. "\xC3\x97" .. self.board.n)
 end
 
 function MasyuScreen:getRevealButtonText()
-    return self.board:isShowingSolution() and _("Hide") or _("Show")
+    return self.board:isShowingSolution() and _("Hide solution") or _("Show solution")
 end
 
 return MasyuScreen

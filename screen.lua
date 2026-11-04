@@ -27,6 +27,7 @@ local T               = require("ffi/util").template
 
 local ScreenBase        = lrequire_common("screen_base")
 local MenuHelper        = lrequire_common("menu_helper")
+local GenProgress       = lrequire_common("gen_progress")
 local MasyuBoard        = lrequire("board")
 local MasyuBoardWidget  = lrequire("board_widget")
 
@@ -71,7 +72,7 @@ function MasyuScreen:init()
     local n     = self.plugin:getSetting("grid_n", MasyuBoard.DEFAULT_N)
     self.board  = MasyuBoard:new{ n = n }
     if not self.board:load(state) then
-        self.board:generate()
+        GenProgress.run(function(on_progress) self.board:generate(on_progress) end)
     end
     ScreenBase.init(self)
 end
@@ -153,7 +154,7 @@ end
 function MasyuScreen:onNewGame()
     local n = self.plugin:getSetting("grid_n", MasyuBoard.DEFAULT_N)
     self.board = MasyuBoard:new{ n = n }
-    self.board:generate()
+    GenProgress.run(function(on_progress) self.board:generate(on_progress) end)
     self.plugin:saveState(self.board:serialize())
     self:buildLayout()
     UIManager:setDirty(self, function() return "ui", self.dimen end)

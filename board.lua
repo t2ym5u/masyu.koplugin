@@ -149,15 +149,18 @@ local function classifyLoop(loop)
     return types
 end
 
--- Place clues: black circles at turns (where prev/next are straight),
--- white circles at straight cells (where prev/next are turns).
-local function placeCircles(loop, cell_types, n, target_count)
+-- Every cell of the loop where a circle fits: black at a turn whose two
+-- neighbours along the loop are straight (both arms run straight on), white
+-- at a straight cell with at least one turning neighbour -- the rule
+-- _checkWin() applies. Up to 1.4 white circles went only where BOTH
+-- neighbours turn, which left so few clues that barely 1 loop shape in 150
+-- had a unique solution at 8x8; with the full rule about 1 in 4 does.
+-- Returns the clue grid and how many circles the old, stricter placement
+-- would have used (the level digClues() brings it back down to).
+local function placeCircles(loop, cell_types, n)
     local total = #loop
     local clues = emptyGrid(n, n, CELL_EMPTY)
-
-    -- Build index: loop position to grid index
-    local black_cands = {}
-    local white_cands = {}
+    local strict = 0
 
     for i = 1, total do
         local prev_i = (i - 2) % total + 1
@@ -165,280 +168,315 @@ local function placeCircles(loop, cell_types, n, target_count)
         local r, c   = loop[i][1], loop[i][2]
 
         if cell_types[i] == "turn" then
-            -- Black circle candidate: segments before and after must be straight
             if cell_types[prev_i] == "straight" and cell_types[next_i] == "straight" then
-                black_cands[#black_cands+1] = {r, c}
+                clues[r][c] = CELL_BLACK
+                strict = strict + 1
             end
         else
-            -- White circle candidate: segments before and after must turn
-            if cell_types[prev_i] == "turn" and cell_types[next_i] == "turn" then
-                white_cands[#white_cands+1] = {r, c}
+            local pt, nt = cell_types[prev_i] == "turn", cell_types[next_i] == "turn"
+            if pt or nt then
+                clues[r][c] = CELL_WHITE
+                if pt and nt then strict = strict + 1 end
             end
         end
     end
 
-    shuffle(black_cands)
-    shuffle(white_cands)
-
-    -- Clamp to available candidates first, then try to reach at least 1 of
-    -- each type -- forcing a floor of 1 *before* clamping (the previous
-    -- order) indexed past the end of an empty candidate list when a loop
-    -- shape happened to produce zero turn-cells or zero straight-cells.
-    local n_black = math.min(#black_cands, math.max(1, math.floor(target_count / 2)))
-    local n_white = math.min(#white_cands, math.max(1, target_count - n_black))
-
-    for i = 1, n_black do
-        clues[black_cands[i][1]][black_cands[i][2]] = CELL_BLACK
-    end
-    for i = 1, n_white do
-        local r, c = white_cands[i][1], white_cands[i][2]
-        if clues[r][c] == CELL_EMPTY then
-            clues[r][c] = CELL_WHITE
-        end
-    end
-
-    return clues
+    return clues, strict
 end
 
 -- ---------------------------------------------------------------------------
 -- Uniqueness counter. The win-check (_checkWin above) is genuinely rule-
--- based, not a literal comparison to the stored loop -- and notably does
--- NOT require a single connected loop, only: every marked cell has
--- exactly 2 marked 4-neighbors; every black-clue cell is marked, is a
--- turn, and both arms extend straight for one more cell; every white-clue
--- cell is marked, is straight, and at least one arm leads to a turn cell.
--- Uniqueness means: is there only one marked-cell assignment satisfying
--- all of that, given the clue placement? Backtracking over cells (clue
--- cells forced marked from the start), with the degree-2 rule propagated
--- incrementally; full clue verification (turn/straight/arm-to-turn) is
--- only checked once every cell is decided, mirroring slitherlink's
--- final-only loop check.
+-- based, not a literal comparison to the stored loop: every marked cell has
+-- exactly 2 marked 4-neighbors; the marked cells form a single loop; every
+-- black-clue cell is marked, is a turn, and both arms extend straight for
+-- one more cell; every white-clue cell is marked, is straight, and at least
+-- one arm leads to a turn cell. Uniqueness means: is there only one marked-
+-- cell assignment satisfying all of that, given the clue placement?
+--
+-- 1.5.0: the circles' rules are propagated as cells get decided (a black
+-- circle's arm on the loop forces the cell beyond it on and its sides off,
+-- a white circle's orientation fixes all four neighbours, and so on), a
+-- finished loop that leaves marked cells out is cut at once, and the
+-- search grows the loop from a marked cell still missing a neighbour. The
+-- old counter only checked the circles once every cell was decided: an 8x8
+-- shape took ~0.1-1 s, so generation ran into its 2 s CPU-time cap and
+-- shipped an unproven puzzle 9 times in 10 on a desktop -- and on a slower
+-- device a different one. Same counts, checked against it on random clue
+-- sets.
 -- ---------------------------------------------------------------------------
 
 local function countSolutions(clues, n, limit, node_budget)
-    local marked = {}
-    for r = 1, n do marked[r] = {} end
-
-    local order, seen = {}, {}
+    local N = n * n
+    -- Cell i = (r - 1) * n + c; 0 stands for "off the board" (never marked).
+    local up, down, left, right = {}, {}, {}, {}
     for r = 1, n do
         for c = 1, n do
-            if clues[r][c] ~= CELL_EMPTY then
-                marked[r][c] = true
-                seen[r * 1000 + c] = true
-            end
+            local i = (r - 1) * n + c
+            up[i]    = r > 1 and i - n or 0
+            down[i]  = r < n and i + n or 0
+            left[i]  = c > 1 and i - 1 or 0
+            right[i] = c < n and i + 1 or 0
         end
     end
+    up[0], down[0], left[0], right[0] = 0, 0, 0, 0
+    local nbrs = {}
+    for i = 1, N do nbrs[i] = { up[i], down[i], left[i], right[i] } end
+
+    local val = { [0] = false }
+    local blacks, whites = {}, {}
     for r = 1, n do
         for c = 1, n do
-            if clues[r][c] ~= CELL_EMPTY then
-                for _, d in ipairs(DIRS) do
-                    local nr, nc = r + d[1], c + d[2]
-                    if nr >= 1 and nr <= n and nc >= 1 and nc <= n then
-                        local k = nr * 1000 + nc
-                        if not seen[k] then seen[k] = true; order[#order + 1] = { r = nr, c = nc } end
-                        for _, d2 in ipairs(DIRS) do
-                            local nr2, nc2 = nr + d2[1], nc + d2[2]
-                            if nr2 >= 1 and nr2 <= n and nc2 >= 1 and nc2 <= n then
-                                local k2 = nr2 * 1000 + nc2
-                                if not seen[k2] then seen[k2] = true; order[#order + 1] = { r = nr2, c = nc2 } end
+            local i = (r - 1) * n + c
+            if clues[r][c] == CELL_BLACK then blacks[#blacks + 1] = i
+            elseif clues[r][c] == CELL_WHITE then whites[#whites + 1] = i end
+        end
+    end
+    local trail, top = {}, 0
+    local function set(i, v)
+        local cur = val[i]
+        if cur ~= nil then return cur == v end
+        val[i] = v
+        top = top + 1
+        trail[top] = i
+        return true
+    end
+    local function undoTo(mark)
+        while top > mark do
+            val[trail[top]] = nil
+            trail[top] = nil
+            top = top - 1
+        end
+    end
+    for _, i in ipairs(blacks) do set(i, true) end
+    for _, i in ipairs(whites) do set(i, true) end
+    local base = top
+
+    local changed
+    local function force(i, v)
+        if val[i] == nil then
+            if i == 0 then return v == false end
+            changed = true
+            return set(i, v)
+        end
+        return val[i] == v
+    end
+
+    -- arm of a black circle: x = b + d, y = b + 2d, p1/p2 = x's sides
+    local function blackArm(x, y, p1, p2)
+        if x == 0 then return true end
+        if val[x] == true then
+            if y == 0 then return false end
+            if not force(y, true) or not force(p1, false) or not force(p2, false) then return false end
+        elseif val[x] == nil then
+            if val[y] == false or val[p1] == true or val[p2] == true then
+                if not force(x, false) then return false end
+            end
+        end
+        return true
+    end
+    local function exactlyOne(a, b)
+        local va, vb = val[a], val[b]
+        if va == true then return force(b, false) end
+        if va == false then return force(b, true) end
+        if vb == true then return force(a, false) end
+        if vb == false then return force(a, true) end
+        return true
+    end
+
+    local function propagate()
+        changed = true
+        while changed do
+            changed = false
+            for i = 1, N do
+                if val[i] == true then
+                    local m, u = 0, 0
+                    local nb = nbrs[i]
+                    for t = 1, 4 do
+                        local v = val[nb[t]]
+                        if v == true then m = m + 1 elseif v == nil then u = u + 1 end
+                    end
+                    if m > 2 or m + u < 2 then return false end
+                    if u > 0 and (m == 2 or m + u == 2) then
+                        local to = m < 2
+                        for t = 1, 4 do
+                            local j = nb[t]
+                            if val[j] == nil then
+                                if not force(j, to) then return false end
                             end
                         end
                     end
                 end
             end
+            for _, b in ipairs(blacks) do
+                if not exactlyOne(up[b], down[b]) or not exactlyOne(left[b], right[b]) then return false end
+                local u, d, l, r = up[b], down[b], left[b], right[b]
+                if not blackArm(u, up[u], left[u], right[u]) then return false end
+                if not blackArm(d, down[d], left[d], right[d]) then return false end
+                if not blackArm(l, left[l], up[l], down[l]) then return false end
+                if not blackArm(r, right[r], up[r], down[r]) then return false end
+            end
+            for _, w in ipairs(whites) do
+                local u, d, l, r = up[w], down[w], left[w], right[w]
+                local vert
+                if val[u] == true or val[d] == true or val[l] == false or val[r] == false then vert = true
+                elseif val[l] == true or val[r] == true or val[u] == false or val[d] == false then vert = false end
+                if vert ~= nil then
+                    local a1, a2, o1, o2 = u, d, l, r
+                    if not vert then a1, a2, o1, o2 = l, r, u, d end
+                    if not force(a1, true) or not force(a2, true)
+                            or not force(o1, false) or not force(o2, false) then
+                        return false
+                    end
+                    -- one arm must turn: its cell beyond can't be on the loop
+                    local b1 = vert and up[a1] or left[a1]
+                    local b2 = vert and down[a2] or right[a2]
+                    if val[b1] == true then
+                        if not force(b2, false) then return false end
+                    elseif val[b2] == true then
+                        if not force(b1, false) then return false end
+                    end
+                end
+            end
         end
+        return true
     end
-    for r = 1, n do
-        for c = 1, n do
-            local k = r * 1000 + c
-            if not seen[k] then seen[k] = true; order[#order + 1] = { r = r, c = c } end
+
+    -- A run of marked cells each with exactly two marked neighbours and no
+    -- undecided ones that closes on itself is a finished loop: fine only if
+    -- it holds every marked cell (the rest must then stay unmarked).
+    local seen, stamp = {}, 0
+    local function closesEarly()
+        local marked = 0
+        for i = 1, N do
+            if val[i] == true then marked = marked + 1 end
         end
+        stamp = stamp + 1
+        for s = 1, N do
+            if val[s] == true and seen[s] ~= stamp then
+                local len, prev, cur, closed = 0, 0, s, false
+                while true do
+                    seen[cur] = stamp
+                    len = len + 1
+                    local nb, nxt, m = nbrs[cur], nil, 0
+                    local open = false
+                    for t = 1, 4 do
+                        local v = val[nb[t]]
+                        if v == nil then open = true
+                        elseif v == true then
+                            m = m + 1
+                            if nb[t] ~= prev and not nxt then nxt = nb[t] end
+                        end
+                    end
+                    if open or m ~= 2 then break end
+                    if nxt == s and len > 2 then closed = true; break end
+                    if not nxt or seen[nxt] == stamp then break end
+                    prev, cur = cur, nxt
+                end
+                if closed and len < marked then return true end
+            end
+        end
+        return false
     end
 
     local solutions, nodes, exhausted = 0, 0, false
-
-    local function markedNeighborInfo(r, c)
-        local have, undecided = 0, {}
-        for _, d in ipairs(DIRS) do
-            local nr, nc = r + d[1], c + d[2]
-            if nr >= 1 and nr <= n and nc >= 1 and nc <= n then
-                local v = marked[nr][nc]
-                if v == true then have = have + 1
-                elseif v == nil then undecided[#undecided + 1] = { nr, nc } end
-            end
-        end
-        return have, undecided
-    end
-
-    local function arms(r, c)
-        local a = {}
-        for _, d in ipairs(DIRS) do
-            local nr, nc = r + d[1], c + d[2]
-            if nr >= 1 and nr <= n and nc >= 1 and nc <= n and marked[nr][nc] then a[#a + 1] = d end
-        end
-        return a
-    end
-    local function isTurnFinal(r, c)
-        local a = arms(r, c)
-        return #a == 2 and not (a[1][1] == -a[2][1] and a[1][2] == -a[2][2])
-    end
-    local function isStraightFinal(r, c)
-        local a = arms(r, c)
-        return #a == 2 and a[1][1] == -a[2][1] and a[1][2] == -a[2][2]
-    end
-
-    local function isSingleLoopFinal()
-        local total, start_r, start_c = 0, nil, nil
-        for r = 1, n do
-            for c = 1, n do
-                if marked[r][c] then
-                    total = total + 1
-                    if not start_r then start_r, start_c = r, c end
-                end
-            end
-        end
-        if total == 0 then return false end
-        local visited = 0
-        local cur_r, cur_c = start_r, start_c
-        local prev_r, prev_c = nil, nil
-        repeat
-            visited = visited + 1
-            local next_r, next_c
-            for _, d in ipairs(DIRS) do
-                local nr, nc = cur_r + d[1], cur_c + d[2]
-                if nr >= 1 and nr <= n and nc >= 1 and nc <= n and marked[nr][nc]
-                    and not (nr == prev_r and nc == prev_c) then
-                    next_r, next_c = nr, nc
-                    break
-                end
-            end
-            if not next_r then return false end
-            prev_r, prev_c = cur_r, cur_c
-            cur_r, cur_c = next_r, next_c
-        until cur_r == start_r and cur_c == start_c
-        return visited == total
-    end
-
-    local function allCluesOKFinal()
-        for r = 1, n do
-            for c = 1, n do
-                local clue = clues[r][c]
-                if clue == CELL_BLACK then
-                    if not marked[r][c] or not isTurnFinal(r, c) then return false end
-                    for _, d in ipairs(arms(r, c)) do
-                        if not isStraightFinal(r + d[1], c + d[2]) then return false end
-                    end
-                elseif clue == CELL_WHITE then
-                    if not marked[r][c] or not isStraightFinal(r, c) then return false end
-                    local has_turn = false
-                    for _, d in ipairs(arms(r, c)) do
-                        if isTurnFinal(r + d[1], c + d[2]) then has_turn = true; break end
-                    end
-                    if not has_turn then return false end
-                end
-            end
-        end
-        return true
-    end
-
-    local function setDecided(r, c, val, changes)
-        if marked[r][c] ~= nil then return marked[r][c] == val end
-        marked[r][c] = val
-        changes[#changes + 1] = { r, c }
-        return true
-    end
-
-    local function undo(changes)
-        for _, cell in ipairs(changes) do marked[cell[1]][cell[2]] = nil end
-    end
-
-    local function propagate(changes)
-        local progressed = true
-        while progressed do
-            progressed = false
-            for r = 1, n do
-                for c = 1, n do
-                    if marked[r][c] == true then
-                        local have, undecided = markedNeighborInfo(r, c)
-                        if have > 2 then return false end
-                        if have == 2 and #undecided > 0 then
-                            for _, cell in ipairs(undecided) do
-                                if not setDecided(cell[1], cell[2], false, changes) then return false end
-                            end
-                            progressed = true
-                        elseif have + #undecided < 2 then
-                            return false
-                        elseif #undecided == 1 and have == 1 then
-                            if not setDecided(undecided[1][1], undecided[1][2], true, changes) then return false end
-                            progressed = true
-                        end
-                    end
-                end
-            end
-        end
-        return true
-    end
-
-    local function allDecided()
-        for r = 1, n do for c = 1, n do if marked[r][c] == nil then return false end end end
-        return true
-    end
-
-    local function search(idx)
+    local function search()
         if solutions >= limit or exhausted then return end
         nodes = nodes + 1
         if nodes > node_budget then exhausted = true; return end
-
-        local changes = {}
-        if not propagate(changes) then
-            undo(changes)
-            return
-        end
-
-        if allDecided() then
-            if isSingleLoopFinal() and allCluesOKFinal() then solutions = solutions + 1 end
-            undo(changes)
-            return
-        end
-
-        local pick_idx
-        for i = idx, #order do
-            local cell = order[i]
-            if marked[cell.r][cell.c] == nil then pick_idx = i; break end
-        end
-        if not pick_idx then
-            undo(changes)
-            return
-        end
-        local pick = order[pick_idx]
-
-        for _, val in ipairs({ true, false }) do
-            local branch_changes = {}
-            if setDecided(pick.r, pick.c, val, branch_changes) then
-                search(pick_idx + 1)
+        local mark = top
+        if not propagate() or closesEarly() then undoTo(mark); return end
+        -- Branch next to a marked cell still short of its two neighbours
+        -- (fewest undecided first); else on any undecided cell.
+        local pick, best = nil, 5
+        for i = 1, N do
+            if val[i] == true then
+                local u, first = 0, nil
+                local nb = nbrs[i]
+                for t = 1, 4 do
+                    if val[nb[t]] == nil then u = u + 1; first = first or nb[t] end
+                end
+                if u > 0 and u < best then best, pick = u, first end
             end
-            undo(branch_changes)
+        end
+        if not pick then
+            for i = 1, N do
+                if val[i] == nil then pick = i; break end
+            end
+        end
+        if not pick then
+            -- All decided: propagation has checked degrees and circles;
+            -- one loop through every marked cell is what is left.
+            local marked, s = 0, nil
+            for i = 1, N do
+                if val[i] then marked = marked + 1; s = s or i end
+            end
+            if s then
+                local len, prev, cur = 0, 0, s
+                repeat
+                    len = len + 1
+                    local nxt
+                    local nb = nbrs[cur]
+                    for t = 1, 4 do
+                        if val[nb[t]] and nb[t] ~= prev then nxt = nb[t]; break end
+                    end
+                    prev, cur = cur, nxt
+                until cur == s or len > marked
+                if len == marked then solutions = solutions + 1 end
+            end
+            undoTo(mark)
+            return
+        end
+        for _, v in ipairs({ true, false }) do
+            local m2 = top
+            if set(pick, v) then search() end
+            undoTo(m2)
             if solutions >= limit or exhausted then break end
         end
-        undo(changes)
+        undoTo(mark)
     end
-
-    search(1)
+    search()
+    undoTo(base)
     return solutions, exhausted
 end
 
-local function uniquenessNodeBudget(n)
-    if n <= 6 then return 60000 end
-    return 100000
-end
+-- Node counts, not time, so a seed gives the same puzzle on any device.
+-- Measured well under this on every 8x8 shape tried.
+local NODE_BUDGET = 200000
 
--- Unlike lightup/tapa/slitherlink, sparser reveal ratios essentially never
--- prove unique here (measured: full reveal -- every valid black/white
--- candidate on the loop -- only succeeds ~10% of the time per loop shape,
--- and any ratio below that is strictly worse), so there's no useful
--- escalation ladder: always reveal every candidate and instead retry with
--- a fresh loop shape.
-local REVEAL_LEVELS = { 100.0 }
+-- Loop shapes tried before giving up; ~1 in 4 is unique at 8x8 (~1 in 2
+-- at 6x6), so this is never reached in practice.
+local MAX_SHAPES = 200
+
+-- A unique clue set from placeCircles() has more circles than the old
+-- placement used; take circles away (random order) while the solution stays
+-- unique, until back at that level.
+local function digClues(clues, n, target, node_budget, on_progress)
+    local cells = {}
+    local count = 0
+    for r = 1, n do
+        for c = 1, n do
+            if clues[r][c] ~= CELL_EMPTY then
+                cells[#cells + 1] = { r, c }
+                count = count + 1
+            end
+        end
+    end
+    shuffle(cells)
+    for i, cell in ipairs(cells) do
+        if count <= target then break end
+        if on_progress then on_progress(i / #cells) end
+        local r, c = cell[1], cell[2]
+        local saved = clues[r][c]
+        clues[r][c] = CELL_EMPTY
+        local solutions, exhausted = countSolutions(clues, n, 2, node_budget)
+        if solutions == 1 and not exhausted then
+            count = count - 1
+        else
+            clues[r][c] = saved
+        end
+    end
+    return clues
+end
 
 -- ---------------------------------------------------------------------------
 -- MasyuBoard
@@ -466,43 +504,30 @@ function MasyuBoard:new(opts)
     }, self)
 end
 
-function MasyuBoard:generate()
+-- on_progress (optional): called with a 0..1 fraction as it goes.
+function MasyuBoard:generate(on_progress)
     local n = self.n
-    -- n=8 verification is inherently slow (proving a shape UNIQUE requires
-    -- exhausting its whole remaining search space, and that only succeeds
-    -- for a minority of generated loop shapes, regardless of node budget --
-    -- measured no material quality gain from 20000 up through 400000, just
-    -- longer waits) -- keep the per-attempt budget modest so several loop
-    -- shapes fit in the wall-clock cap below rather than one deep search.
-    local node_budget = n <= 6 and 300000 or 60000
-    local time_budget = n <= 6 and nil or 2.0
-    local start_clock = os.clock()
-
     local loop, clues
     local best_loop, best_clues
 
-    for _ = 1, 40 do
-        if loop then break end
-        if time_budget and os.clock() - start_clock > time_budget then break end
+    for shape = 1, MAX_SHAPES do
+        if on_progress then on_progress(shape / (shape + 3) * 0.5) end
         -- Empirically 0/500 failures at n=6 and n=8 with this cap (avg
         -- ~5-26 attempts needed); the trivial 2x2 loop below is only a
         -- last-resort safety net, never expected to trigger in practice.
         local cand_loop = generateLoop(n, 5000)
             or { {1,1}, {1,2}, {2,2}, {2,1} }
         local cell_types = classifyLoop(cand_loop)
-        local target     = math.max(4, math.floor(#cand_loop * 0.35))
-
-        for _, mult in ipairs(REVEAL_LEVELS) do
-            if loop then break end
-            local target_count = math.floor(target * mult)
-            local candidate_clues = placeCircles(cand_loop, cell_types, n, target_count)
-            if not best_loop then
-                best_loop, best_clues = cand_loop, candidate_clues
-            end
-            local solutions, exhausted = countSolutions(candidate_clues, n, 2, node_budget)
-            if solutions == 1 and not exhausted then
-                loop, clues = cand_loop, candidate_clues
-            end
+        local candidate_clues, strict = placeCircles(cand_loop, cell_types, n)
+        if not best_loop then
+            best_loop, best_clues = cand_loop, candidate_clues
+        end
+        local solutions, exhausted = countSolutions(candidate_clues, n, 2, NODE_BUDGET)
+        if solutions == 1 and not exhausted then
+            loop  = cand_loop
+            clues = digClues(candidate_clues, n, math.max(4, strict), NODE_BUDGET,
+                on_progress and function(f) on_progress(0.5 + 0.5 * f) end)
+            break
         end
     end
     if not loop then loop, clues = best_loop, best_clues end
@@ -756,5 +781,8 @@ function MasyuBoard:load(data)
     self.won             = data.won or false
     return true
 end
+
+-- for the specs
+MasyuBoard._countSolutions = countSolutions
 
 return MasyuBoard

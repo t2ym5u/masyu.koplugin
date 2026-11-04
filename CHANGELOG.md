@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-11-04
+
+### Fixed
+- 8×8 puzzles are always proven to have exactly one solution, and are the
+  same on every device. Generation used to stop after 2 s of CPU time:
+  even on a desktop 9 grids in 10 were shipped unproven, and a slower
+  device (or the Daily Challenge on two devices) could end up with a
+  different grid.
+
+### Changed
+- Much faster: 8×8 took over 2 s on a desktop (it hit that cap), now under
+  0.02 s (about 0.5 s on a Kobo). The solution check applies the circles'
+  rules as the loop is built instead of only at the end.
+- White circles may now sit where only one neighbour of the loop turns
+  (the rule itself is unchanged: at least one side must turn); circles are
+  then taken away while the solution stays unique, down to about as many as
+  before. Puzzles are new.
+- A "Generating puzzle…" progress bar shows when a puzzle takes more than a
+  moment. Needs game-common 1.12.0.
+
 ## [1.4.3] - 2026-11-03
 
 ### Changed

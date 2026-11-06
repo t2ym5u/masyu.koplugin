@@ -185,7 +185,9 @@ local function placeCircles(loop, cell_types, n)
 end
 
 -- ---------------------------------------------------------------------------
--- Uniqueness counter. The win-check (_checkWin above) is genuinely rule-
+-- Uniqueness counter (since 1.6.0 the generator relies on the no-trial
+-- solver below instead; the specs keep this as the independent check that
+-- what the solver finishes has exactly one solution). The win-check (_checkWin above) is genuinely rule-
 -- based, not a literal comparison to the stored loop: every marked cell has
 -- exactly 2 marked 4-neighbors; the marked cells form a single loop; every
 -- black-clue cell is marked, is a turn, and both arms extend straight for
@@ -439,18 +441,512 @@ local function countSolutions(clues, n, limit, node_budget)
     return solutions, exhausted
 end
 
--- Node counts, not time, so a seed gives the same puzzle on any device.
--- Measured well under this on every 8x8 shape tried.
-local NODE_BUDGET = 200000
+-- ---------------------------------------------------------------------------
+-- No-trial solver. Decides, cell by cell, whether the loop passes through,
+-- using only the deductions a player makes without "assume X and look for a
+-- contradiction". The generator only ships a puzzle this solver finishes,
+-- which also proves its solution unique (every step is forced).
+--
+-- Tier 1 (direct rules):
+--   * a loop cell has exactly two loop neighbours: once it has two, the
+--     others are out; when only two can still be on, both are on;
+--   * a cell next to three loop cells, or with fewer than two neighbours
+--     left that could be on, is out;
+--   * black circle: exactly one of up/down and one of left/right; an arm on
+--     the loop runs straight one more cell (its sides out), an arm that
+--     cannot do so is out;
+--   * white circle: once its direction is known its two neighbours are on,
+--     the two across are out, and both arms cannot run straight on.
+-- Tier 2 (loop and circle patterns):
+--   * no premature loop: a cell that would close a piece of the loop while
+--     other loop cells lie outside it is out;
+--   * one loop: cells that loop cells cannot reach are out, and a cell every
+--     path between two loop cells must cross is on;
+--   * circle patterns (edges, corners, circles side by side): each circle
+--     has a few ways through it (4 for black, 2 for white); a way is ruled
+--     out when it clashes with a decided cell, gives a cell three loop
+--     neighbours or a loop cell fewer than two, or leaves a circle within
+--     reach no way of its own. What every remaining way agrees on is
+--     decided.
+-- ---------------------------------------------------------------------------
 
--- Loop shapes tried before giving up; ~1 in 4 is unique at 8x8 (~1 in 2
--- at 6x6), so this is never reached in practice.
-local MAX_SHAPES = 200
+-- Grid geometry and each circle's ways, per size (built once).
+local GEOM = {}
+local function geometry(n)
+    local g = GEOM[n]
+    if g then return g end
+    local function idx(r, c)
+        if r < 1 or r > n or c < 1 or c > n then return 0 end
+        return (r - 1) * n + c
+    end
+    local up, down, left, right, nbrs = { [0] = 0 }, { [0] = 0 }, { [0] = 0 }, { [0] = 0 }, {}
+    local black_ways, white_ways = {}, {}
+    for r = 1, n do
+        for c = 1, n do
+            local i = idx(r, c)
+            up[i], down[i], left[i], right[i] = idx(r-1, c), idx(r+1, c), idx(r, c-1), idx(r, c+1)
+            nbrs[i] = { up[i], down[i], left[i], right[i] }
+            local bw = {}
+            for _, dv in ipairs({ -1, 1 }) do
+                for _, dh in ipairs({ -1, 1 }) do
+                    local a1, a2 = idx(r + dv, c), idx(r + 2*dv, c)
+                    local b1, b2 = idx(r, c + dh), idx(r, c + 2*dh)
+                    if a2 ~= 0 and b2 ~= 0 then
+                        bw[#bw+1] = {
+                            on  = { a1, a2, b1, b2 },
+                            off = { idx(r - dv, c), idx(r, c - dh), idx(r + dv, c + dh),
+                                    idx(r + dv, c - dh), idx(r - dv, c + dh) },
+                        }
+                    end
+                end
+            end
+            black_ways[i] = bw
+            local ww = {}
+            local u, d, l, rr = idx(r-1, c), idx(r+1, c), idx(r, c-1), idx(r, c+1)
+            if u ~= 0 and d ~= 0 then
+                ww[#ww+1] = { on = { u, d }, off = { l, rr }, ends = { idx(r-2, c), idx(r+2, c) } }
+            end
+            if l ~= 0 and rr ~= 0 then
+                ww[#ww+1] = { on = { l, rr }, off = { u, d }, ends = { idx(r, c-2), idx(r, c+2) } }
+            end
+            white_ways[i] = ww
+        end
+    end
+    -- Each way's cells (on, off, ends) and its zone: those cells plus every
+    -- cell within two steps of its loop cells. Two ways whose cells stay out
+    -- of each other's zone cannot clash (see wayFits).
+    local function prep(w)
+        local cells, zone = {}, {}
+        for _, list in ipairs({ w.on, w.off, w.ends or {} }) do
+            for _, i in ipairs(list) do
+                if i ~= 0 then cells[#cells+1] = i; zone[i] = true end
+            end
+        end
+        for _, i in ipairs(w.on) do
+            local r, c = math.floor((i - 1) / n) + 1, (i - 1) % n + 1
+            for dr = -2, 2 do
+                for dc = -2, 2 do
+                    if math.abs(dr) + math.abs(dc) <= 2 then
+                        local j = idx(r + dr, c + dc)
+                        if j ~= 0 then zone[j] = true end
+                    end
+                end
+            end
+        end
+        w.cells, w.zone = cells, zone
+    end
+    for i = 1, n * n do
+        for _, w in ipairs(black_ways[i]) do prep(w) end
+        for _, w in ipairs(white_ways[i]) do prep(w) end
+    end
+    g = { up = up, down = down, left = left, right = right, nbrs = nbrs,
+          black_ways = black_ways, white_ways = white_ways }
+    GEOM[n] = g
+    return g
+end
 
--- A unique clue set from placeCircles() has more circles than the old
--- placement used; take circles away (random order) while the solution stays
--- unique, until back at that level.
-local function digClues(clues, n, target, node_budget, on_progress)
+-- One solver per size, built once: its rules are closures over per-call
+-- state reset by each solve, so LuaJIT keeps their traces (new closures on
+-- every call made it re-trace them all, about 3x slower).
+local function makeSolver(n)
+    local N = n * n
+    local G = geometry(n)
+    local up, down, left, right, nbrs = G.up, G.down, G.left, G.right, G.nbrs
+
+    local val, stats, circles
+    local bad = false
+    local changed = false
+    local function force(i, v)
+        local cur = val[i]
+        if cur == nil then
+            if i == 0 then return v == false end
+            val[i] = v
+            changed = true
+            stats.t1 = stats.t1 + 1
+            return true
+        end
+        if cur ~= v then bad = true; return false end
+        return true
+    end
+
+    local function setup(clues)
+        val = { [0] = false }
+        stats = { t1 = 0, t2 = 0, undecided = 0 }
+        bad, changed = false, false
+        circles = {}
+        for r = 1, n do
+            for c = 1, n do
+                local k = clues[r][c]
+                if k == CELL_BLACK or k == CELL_WHITE then
+                    local i = (r - 1) * n + c
+                    val[i] = true
+                    local src = k == CELL_BLACK and G.black_ways[i] or G.white_ways[i]
+                    local ways = {}
+                    for t = 1, #src do ways[t] = src[t] end
+                    circles[#circles+1] = { i = i, r = r, c = c, black = (k == CELL_BLACK), ways = ways }
+                end
+            end
+        end
+        for _, a in ipairs(circles) do
+            a.near = {}
+            for _, b in ipairs(circles) do
+                if a ~= b and math.abs(a.r - b.r) <= 4 and math.abs(a.c - b.c) <= 4 then
+                    a.near[#a.near+1] = b
+                end
+            end
+        end
+    end
+
+    -- Tier 1 ----------------------------------------------------------------
+    local function blackArm(x, y, p1, p2)
+        if x == 0 then return true end
+        if val[x] == true then
+            if y == 0 then bad = true; return false end
+            return force(y, true) and force(p1, false) and force(p2, false)
+        elseif val[x] == nil then
+            if val[y] == false or val[p1] == true or val[p2] == true then
+                return force(x, false)
+            end
+        end
+        return true
+    end
+    local function exactlyOne(a, b)
+        local va, vb = val[a], val[b]
+        if va == true then return force(b, false) end
+        if va == false then return force(b, true) end
+        if vb == true then return force(a, false) end
+        if vb == false then return force(a, true) end
+        return true
+    end
+
+    local function tier1()
+        changed = true
+        while changed do
+            changed = false
+            for i = 1, N do
+                local vi = val[i]
+                if vi ~= false then
+                    local nb = nbrs[i]
+                    local m, u = 0, 0
+                    for t = 1, 4 do
+                        local v = val[nb[t]]
+                        if v == true then m = m + 1 elseif v == nil then u = u + 1 end
+                    end
+                    if vi == true then
+                        if m > 2 or m + u < 2 then bad = true; return false end
+                        if u > 0 and (m == 2 or m + u == 2) then
+                            local to = m < 2
+                            for t = 1, 4 do
+                                if val[nb[t]] == nil and not force(nb[t], to) then return false end
+                            end
+                        end
+                    elseif m >= 3 or m + u < 2 then
+                        force(i, false)
+                    end
+                end
+            end
+            for _, cc in ipairs(circles) do
+                local b = cc.i
+                local u, d, l, r = up[b], down[b], left[b], right[b]
+                if cc.black then
+                    if not (exactlyOne(u, d) and exactlyOne(l, r)
+                            and blackArm(u, up[u], left[u], right[u])
+                            and blackArm(d, down[d], left[d], right[d])
+                            and blackArm(l, left[l], up[l], down[l])
+                            and blackArm(r, right[r], up[r], down[r])) then
+                        return false
+                    end
+                else
+                    local vert
+                    if val[u] == true or val[d] == true or val[l] == false or val[r] == false then vert = true
+                    elseif val[l] == true or val[r] == true or val[u] == false or val[d] == false then vert = false end
+                    if vert ~= nil then
+                        local a1, a2, o1, o2 = u, d, l, r
+                        if not vert then a1, a2, o1, o2 = l, r, u, d end
+                        if not (force(a1, true) and force(a2, true) and force(o1, false) and force(o2, false)) then
+                            return false
+                        end
+                        local b1 = vert and up[a1] or left[a1]
+                        local b2 = vert and down[a2] or right[a2]
+                        if val[b1] == true and not force(b2, false) then return false end
+                        if val[b2] == true and not force(b1, false) then return false end
+                    end
+                end
+            end
+            if bad then return false end
+        end
+        return true
+    end
+
+    -- Tier 2: loop rules ------------------------------------------------------
+    local comp = {}
+    local function prematureLoop()
+        for i = 1, N do comp[i] = nil end
+        local ncomp = 0
+        for s = 1, N do
+            if val[s] == true and not comp[s] then
+                ncomp = ncomp + 1
+                local q, h = { s }, 1
+                comp[s] = ncomp
+                while h <= #q do
+                    local x = q[h]; h = h + 1
+                    local nb = nbrs[x]
+                    for t = 1, 4 do
+                        local y = nb[t]
+                        if y ~= 0 and val[y] == true and not comp[y] then comp[y] = ncomp; q[#q+1] = y end
+                    end
+                end
+            end
+        end
+        if ncomp < 2 then return false end
+        local progress = false
+        for i = 1, N do
+            if val[i] == nil then
+                local nb = nbrs[i]
+                local c1 = nil
+                for t = 1, 4 do
+                    local y = nb[t]
+                    if y ~= 0 and val[y] == true then
+                        local c = comp[y]
+                        if c == c1 then force(i, false); progress = true; break end
+                        c1 = c1 or c
+                        -- (a cell has at most 2 loop neighbours here: tier 1
+                        -- already put out any with three)
+                    end
+                end
+            end
+        end
+        return progress
+    end
+
+    local seen, queue = {}, {}
+    local stamp = 0
+    -- Marked cells reachable from `first` through cells that are not out,
+    -- never entering `skip`. Leaves seen[x] == stamp for every cell reached.
+    local function reach(first, skip)
+        stamp = stamp + 1
+        seen[first] = stamp
+        queue[1] = first
+        local h, tail, got = 1, 1, 1
+        while h <= tail do
+            local x = queue[h]; h = h + 1
+            local nb = nbrs[x]
+            for t = 1, 4 do
+                local y = nb[t]
+                if y ~= 0 and y ~= skip and seen[y] ~= stamp and val[y] ~= false then
+                    seen[y] = stamp
+                    tail = tail + 1
+                    queue[tail] = y
+                    if val[y] == true then got = got + 1 end
+                end
+            end
+        end
+        return got
+    end
+    local function unreachable()
+        local first, total = nil, 0
+        for i = 1, N do if val[i] == true then first = first or i; total = total + 1 end end
+        if not first then return false end
+        if reach(first, nil) < total then bad = true; return false end
+        local progress = false
+        for i = 1, N do
+            if val[i] == nil and seen[i] ~= stamp then force(i, false); progress = true end
+        end
+        return progress
+    end
+    local function bottleneck()
+        local first, total = nil, 0
+        for i = 1, N do if val[i] == true then first = first or i; total = total + 1 end end
+        if not first then return false end
+        for i = 1, N do
+            if val[i] == nil and reach(first, i) < total then
+                force(i, true)
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Tier 2: circle patterns -------------------------------------------------
+    -- tmp holds what the ways being tried put on top of val; undo stack below.
+    local tmp, ustack, utop = {}, {}, 0
+    local function get(i)
+        local t = tmp[i]
+        if t ~= nil then return t end
+        return val[i]
+    end
+    local function put(i, v)
+        local cur = get(i)
+        if cur == nil then
+            if i == 0 then return v == false end
+            tmp[i] = v
+            utop = utop + 1
+            ustack[utop] = i
+            return true
+        end
+        return cur == v
+    end
+    local function rollback(mark)
+        while utop > mark do
+            tmp[ustack[utop]] = nil
+            utop = utop - 1
+        end
+    end
+    local function cellOk(i)
+        if i == 0 or get(i) ~= true then return true end
+        local nb = nbrs[i]
+        local m, p = 0, 0
+        for t = 1, 4 do
+            local v = get(nb[t])
+            if v == true then m = m + 1; p = p + 1 elseif v == nil then p = p + 1 end
+        end
+        return m <= 2 and p >= 2
+    end
+    -- Put a way on top of tmp; false if it clashes.
+    local function apply(w)
+        local on, off = w.on, w.off
+        for t = 1, #on do if not put(on[t], true) then return false end end
+        for t = 1, #off do if not put(off[t], false) then return false end end
+        local e = w.ends
+        if e and get(e[1]) == true and get(e[2]) == true then return false end
+        for t = 1, #on do
+            local i = on[t]
+            if not cellOk(i) then return false end
+            local nb = nbrs[i]
+            for s = 1, 4 do if not cellOk(nb[s]) then return false end end
+        end
+        return true
+    end
+    local function touches(w, w2)
+        local zone = w.zone
+        for _, i in ipairs(w2.cells) do if zone[i] then return true end end
+        zone = w2.zone
+        for _, i in ipairs(w.cells) do if zone[i] then return true end end
+        return false
+    end
+    -- alone[w]: the way fits the decided cells on its own.
+    local alone = {}
+    local function wayFits(cc, w)
+        if not alone[w] then return false end
+        for _, o in ipairs(cc.near) do
+            if not o.done then
+                local any = false
+                for _, w2 in ipairs(o.ways) do
+                    if alone[w2] then
+                        if not touches(w, w2) then any = true; break end
+                        local ok2 = apply(w) and apply(w2) and apply(w)  -- re-check w with w2 on top
+                        rollback(0)
+                        if ok2 then any = true; break end
+                    end
+                end
+                if not any then return false end
+            end
+        end
+        return true
+    end
+    local function patterns()
+        local progress = false
+        for _, cc in ipairs(circles) do
+            if not cc.done then
+                for _, w in ipairs(cc.ways) do
+                    alone[w] = apply(w)
+                    rollback(0)
+                end
+            end
+        end
+        for _, cc in ipairs(circles) do
+          if not cc.done then
+            local keep = {}
+            for _, w in ipairs(cc.ways) do
+                if wayFits(cc, w) then keep[#keep+1] = w end
+            end
+            if #keep == 0 then bad = true; return false end
+            if #keep < #cc.ways then cc.ways = keep; progress = true end
+            -- what every remaining way agrees on
+            local first = keep[1]
+            for _, list in ipairs({ first.on, first.off }) do
+                local to = list == first.on
+                for _, i in ipairs(list) do
+                    if i ~= 0 and val[i] == nil then
+                        local all = true
+                        for t = 2, #keep do
+                            local found = false
+                            for _, j in ipairs(to and keep[t].on or keep[t].off) do
+                                if j == i then found = true; break end
+                            end
+                            if not found then all = false; break end
+                        end
+                        if all then force(i, to); progress = true end
+                    end
+                end
+            end
+            if bad then return false end
+            if #keep == 1 then
+                -- settled once all its cells are decided
+                local all = true
+                for _, i in ipairs(first.on) do if val[i] == nil then all = false end end
+                for _, i in ipairs(first.off) do if i ~= 0 and val[i] == nil then all = false end end
+                cc.done = all
+            end
+          end
+        end
+        return progress
+    end
+
+    local rules = { prematureLoop, unreachable, patterns, bottleneck }
+    return function(clues)
+        setup(clues)
+        while true do
+            if not tier1() then return false, val, stats end
+            local more = false
+            for _, rule in ipairs(rules) do
+                more = rule()
+                if bad then rollback(0); return false, val, stats end
+                if more then break end
+            end
+            if not more then break end
+            stats.t2 = stats.t2 + 1
+        end
+        for i = 1, N do if val[i] == nil then stats.undecided = stats.undecided + 1 end end
+        return stats.undecided == 0, val, stats
+    end
+end
+
+local SOLVERS = {}
+-- Interpreted, this solver is faster than compiled: its many short branchy
+-- loops make LuaJIT record and throw away traces on every new puzzle
+-- (measured 1.5x slower over a whole generation with the JIT on).
+if jit then jit.off(makeSolver, true) end
+-- Returns solved (bool), val (cell index -> bool, i = (r-1)*n + c), stats
+-- { t1 = cells decided by tier-1 rules, t2 = tier-2 deductions needed,
+--   undecided = cells left }.
+local function logicSolve(clues, n)
+    local solve = SOLVERS[n]
+    if not solve then
+        solve = makeSolver(n)
+        SOLVERS[n] = solve
+    end
+    return solve(clues)
+end
+
+-- Does the no-trial solver finish these clues, on exactly this loop?
+local function solvesTo(clues, n, on_loop)
+    local ok, val = logicSolve(clues, n)
+    if not ok then return false end
+    for i = 1, n * n do
+        if val[i] ~= (on_loop[i] or false) then return false end
+    end
+    return true
+end
+
+-- Loop shapes tried before falling back to a stored puzzle. With every
+-- circle the full placement allows, about 3 shapes in 4 are solved without
+-- guessing at 8x8 (nearly all at 6x6), so this is never reached in practice.
+local MAX_SHAPES = 60
+
+-- Take circles away (random order) while the no-trial solver still finishes
+-- the puzzle, until down to `target` (the old, sparser placement's count).
+local function digClues(clues, n, target, on_loop, on_progress)
     local cells = {}
     local count = 0
     for r = 1, n do
@@ -468,8 +964,7 @@ local function digClues(clues, n, target, node_budget, on_progress)
         local r, c = cell[1], cell[2]
         local saved = clues[r][c]
         clues[r][c] = CELL_EMPTY
-        local solutions, exhausted = countSolutions(clues, n, 2, node_budget)
-        if solutions == 1 and not exhausted then
+        if solvesTo(clues, n, on_loop) then
             count = count - 1
         else
             clues[r][c] = saved
@@ -477,6 +972,26 @@ local function digClues(clues, n, target, node_budget, on_progress)
     end
     return clues
 end
+
+-- Last-resort puzzles, one per size, checked by the specs (solved by the
+-- no-trial solver, unique). Only used if MAX_SHAPES shapes all fail.
+-- Rows: '.' empty, 'W' white, 'B' black; loop as {r, c} in order.
+local FALLBACK = {
+    [6] = {
+        n = 6,
+        rows = { "..B...", "..W..W", ".....W", "......", "......", "..BW.." },
+        loop = { {6,4}, {6,3}, {5,3}, {4,3}, {3,3}, {2,3}, {1,3}, {1,4}, {1,5}, {1,6},
+                 {2,6}, {3,6}, {4,6}, {4,5}, {5,5}, {6,5} },
+    },
+    [8] = {
+        n = 8,
+        rows = { "BWB.....", "W.W.....", "..W.....", "..B.B...", "....W...", "B.B..W..",
+                 "..W.....", "..BW..W." },
+        loop = { {2,1}, {3,1}, {4,1}, {5,1}, {6,1}, {6,2}, {6,3}, {7,3}, {8,3}, {8,4},
+                 {8,5}, {8,6}, {8,7}, {8,8}, {7,8}, {6,8}, {6,7}, {6,6}, {6,5}, {5,5},
+                 {4,5}, {4,4}, {4,3}, {3,3}, {2,3}, {1,3}, {1,2}, {1,1} },
+    },
+}
 
 -- ---------------------------------------------------------------------------
 -- MasyuBoard
@@ -508,29 +1023,37 @@ end
 function MasyuBoard:generate(on_progress)
     local n = self.n
     local loop, clues
-    local best_loop, best_clues
 
     for shape = 1, MAX_SHAPES do
         if on_progress then on_progress(shape / (shape + 3) * 0.5) end
-        -- Empirically 0/500 failures at n=6 and n=8 with this cap (avg
-        -- ~5-26 attempts needed); the trivial 2x2 loop below is only a
-        -- last-resort safety net, never expected to trigger in practice.
         local cand_loop = generateLoop(n, 5000)
-            or { {1,1}, {1,2}, {2,2}, {2,1} }
-        local cell_types = classifyLoop(cand_loop)
-        local candidate_clues, strict = placeCircles(cand_loop, cell_types, n)
-        if not best_loop then
-            best_loop, best_clues = cand_loop, candidate_clues
-        end
-        local solutions, exhausted = countSolutions(candidate_clues, n, 2, NODE_BUDGET)
-        if solutions == 1 and not exhausted then
-            loop  = cand_loop
-            clues = digClues(candidate_clues, n, math.max(4, strict), NODE_BUDGET,
-                on_progress and function(f) on_progress(0.5 + 0.5 * f) end)
-            break
+        if cand_loop then
+            local on_loop = {}
+            for _, cell in ipairs(cand_loop) do on_loop[(cell[1] - 1) * n + cell[2]] = true end
+            local cell_types = classifyLoop(cand_loop)
+            local candidate_clues, strict = placeCircles(cand_loop, cell_types, n)
+            if solvesTo(candidate_clues, n, on_loop) then
+                loop  = cand_loop
+                clues = digClues(candidate_clues, n, math.max(4, strict), on_loop,
+                    on_progress and function(f) on_progress(0.5 + 0.5 * f) end)
+                break
+            end
         end
     end
-    if not loop then loop, clues = best_loop, best_clues end
+    if not loop then
+        local fb = FALLBACK[n] or FALLBACK[DEFAULT_N]
+        n = fb.n
+        self.n = n
+        loop = {}
+        for i, cell in ipairs(fb.loop) do loop[i] = { cell[1], cell[2] } end
+        clues = emptyGrid(n, n, CELL_EMPTY)
+        for r = 1, n do
+            for c = 1, n do
+                local ch = fb.rows[r]:sub(c, c)
+                clues[r][c] = ch == "W" and CELL_WHITE or ch == "B" and CELL_BLACK or CELL_EMPTY
+            end
+        end
+    end
 
     self.solution_loop   = loop
     self.clues           = clues
@@ -784,5 +1307,7 @@ end
 
 -- for the specs
 MasyuBoard._countSolutions = countSolutions
+MasyuBoard._logicSolve     = logicSolve
+MasyuBoard._FALLBACK       = FALLBACK
 
 return MasyuBoard

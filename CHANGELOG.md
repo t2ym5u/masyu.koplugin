@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-11-05
+
+### Changed
+- Every puzzle can now be solved by reasoning alone, without guessing. A new
+  solver plays the puzzle the way a player does (each loop cell has two loop
+  neighbours, the black and white circle rules, circles at edges, in corners
+  and side by side, no loop closing early, the loop staying in one piece),
+  and the generator only keeps loop shapes and circles it can finish. Before,
+  puzzles were only checked to have one solution: about 1 in 3 8×8 grids
+  (1 in 30 at 6×6) needed "try a cell and see if it breaks".
+- The solver also proves the solution is unique, so generation is about as
+  fast as before (under 0.04 s on a desktop, about 1 s on a Kobo).
+- The Daily Challenge puzzle changes once with this version.
+
 ## [1.5.2] - 2026-11-04
 
 ### Fixed

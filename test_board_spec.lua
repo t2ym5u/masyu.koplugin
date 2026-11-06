@@ -391,6 +391,100 @@ describe("MasyuBoard", function()
         end)
     end)
 
+    describe("no-trial solver", function()
+        local function loopSet(b)
+            local on = {}
+            for _, cell in ipairs(b.solution_loop) do on[(cell[1] - 1) * b.n + cell[2]] = true end
+            return on
+        end
+        local function countClues(b)
+            local k = 0
+            for r = 1, b.n do for c = 1, b.n do
+                if b.clues[r][c] ~= Board.CELL_EMPTY then k = k + 1 end
+            end end
+            return k
+        end
+
+        it("a black circle in a corner sends both arms straight along the edges", function()
+            local clues = {}
+            for r = 1, 6 do clues[r] = {} for c = 1, 6 do clues[r][c] = 0 end end
+            clues[1][1] = Board.CELL_BLACK
+            local _, val = Board._logicSolve(clues, 6)
+            for _, i in ipairs({ 2, 3, 7, 13 }) do assert.is_true(val[i]) end   -- (1,2) (1,3) (2,1) (3,1)
+            assert.is_false(val[8])                                              -- (2,2)
+        end)
+
+        it("every generated puzzle is finished without guessing, on its own loop (40 seeds per size)", function()
+            for _, n in ipairs(Board.SIZES) do
+                for seed = 1, 40 do
+                    math.randomseed(seed * 31 + n)
+                    local b = Board:new{ n = n }
+                    b:generate()
+                    local ok, val, stats = Board._logicSolve(b.clues, n)
+                    assert.is_true(ok, ("n=%d seed %d needs guessing"):format(n, seed))
+                    assert.are.equal(0, stats.undecided)
+                    local on = loopSet(b)
+                    for i = 1, n * n do
+                        assert.are.equal(on[i] or false, val[i], ("n=%d seed %d cell %d"):format(n, seed, i))
+                    end
+                    local k = countClues(b)
+                    assert.is_true(k >= 4 and k <= math.floor(n * n / 2))
+                end
+            end
+        end)
+
+        it("never deduces against a valid loop, and what it finishes is unique (random clue sets)", function()
+            for t = 1, 150 do
+                local n = t % 2 == 0 and 8 or 6
+                math.randomseed(t * 7919)
+                local b = Board:new{ n = n }
+                b:generate()
+                -- drop a random share of the circles: the loop still fits them
+                local keep = math.random()
+                local clues = {}
+                for r = 1, n do
+                    clues[r] = {}
+                    for c = 1, n do
+                        clues[r][c] = math.random() < keep and b.clues[r][c] or Board.CELL_EMPTY
+                    end
+                end
+                local ok, val = Board._logicSolve(clues, n)
+                local on = loopSet(b)
+                for i = 1, n * n do
+                    if val[i] ~= nil then
+                        assert.are.equal(on[i] or false, val[i], ("t=%d cell %d"):format(t, i))
+                    end
+                end
+                if ok then
+                    local count, exhausted = Board._countSolutions(clues, n, 2, 10000000)
+                    assert.is_false(exhausted)
+                    assert.are.equal(1, count)
+                end
+            end
+        end)
+
+        it("the stored fallback puzzles are valid, unique and need no guessing", function()
+            for n, fb in pairs(Board._FALLBACK) do
+                local clues = {}
+                for r = 1, n do
+                    clues[r] = {}
+                    for c = 1, n do
+                        local ch = fb.rows[r]:sub(c, c)
+                        clues[r][c] = ch == "W" and Board.CELL_WHITE or ch == "B" and Board.CELL_BLACK or Board.CELL_EMPTY
+                    end
+                end
+                assert.is_true((Board._logicSolve(clues, n)))
+                local count, exhausted = Board._countSolutions(clues, n, 2, 10000000)
+                assert.is_false(exhausted)
+                assert.are.equal(1, count)
+                local b = Board:new{ n = n }
+                b.clues, b.solution_loop = clues, fb.loop
+                for _, cell in ipairs(fb.loop) do b:setPathCell(cell[1], cell[2], true) end
+                assert.is_true(b.won, "fallback " .. n)
+            end
+        end)
+    end)
+
     describe("tapCell", function()
         it("toggles a cell in the user path", function()
             local b = newBoard(6)
@@ -476,6 +570,29 @@ describe("MasyuBoard", function()
             assert.are.equal(b.n, b2.n)
             assert.are.equal(#b.solution_loop, #b2.solution_loop)
             assert.are.equal(b.user_path[r][c], b2.user_path[r][c])
+        end)
+
+        it("loads a 1.5.x save (same format, puzzle kept as it was)", function()
+            local data = {
+                n = 6,
+                clues = {
+                    { 0, 0, 2, 0, 0, 0 }, { 0, 0, 1, 0, 0, 1 }, { 0, 0, 0, 0, 0, 1 },
+                    { 0, 0, 0, 0, 0, 0 }, { 0, 0, 0, 0, 0, 0 }, { 0, 0, 2, 1, 0, 0 },
+                },
+                solution_loop = { {6,4}, {6,3}, {5,3}, {4,3}, {3,3}, {2,3}, {1,3}, {1,4},
+                                  {1,5}, {1,6}, {2,6}, {3,6}, {4,6}, {4,5}, {5,5}, {6,5} },
+                user_path = { { false, false, true }, {}, {}, {}, {}, {} },
+                reveal_solution = false,
+                won = false,
+            }
+            local b = Board:new{ empty = true }
+            assert.is_true(b:load(data))
+            assert.are.equal(6, b.n)
+            assert.are.equal(Board.CELL_BLACK, b.clues[1][3])
+            assert.is_true(b.user_path[1][3])
+            assert.are.equal(16, #b.solution_loop)
+            for _, cell in ipairs(b.solution_loop) do b:setPathCell(cell[1], cell[2], true) end
+            assert.is_true(b.won)
         end)
 
         it("load returns false for invalid data", function()

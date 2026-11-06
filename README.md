@@ -14,6 +14,7 @@ Draw a single closed loop passing through all pearl circles. **White pearl**: th
 
 - **Two grid sizes** — 6×6, 8×8
 - **Hint** — two taps, working in the loop rather than cells
+- **No guessing** — every puzzle is solvable by logic alone, with one solution
 - **Reveal solution** — show the generated loop at any time
 - **Auto-save** — puzzle state saved and restored on next launch
 
@@ -35,13 +36,12 @@ Draw a single closed loop passing through all pearl circles. **White pearl**: th
 | Change grid size | Tap **Size** |
 | Show rules | Tap **Rules** |
 
-## Known limitations
+## Puzzle quality
 
-At 6×6, every generated puzzle is guaranteed to have exactly one solution. At
-8×8, most puzzles do too, but proving uniqueness there is computationally
-expensive and generation is capped at a couple of seconds — occasionally an
-8×8 puzzle ships without that guarantee (still fully valid and completable,
-just not proven to be the only possible solution).
+Every generated puzzle has exactly one solution and can be solved by
+reasoning alone: the generator only keeps a puzzle that its built-in solver
+finishes without ever guessing (circle rules, edges and corners, no loop
+closing early, the loop staying in one piece).
 
 ## License
 

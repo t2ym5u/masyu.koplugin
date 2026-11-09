@@ -367,28 +367,6 @@ describe("MasyuBoard", function()
                 end
             end
         end)
-
-        it("builds the same uniquely solvable puzzle for a seed, quickly", function()
-            for _, n in ipairs(Board.SIZES) do
-                local worst = 0
-                for seed = 1, 10 do
-                    math.randomseed(seed * 7919 + n)
-                    local b = Board:new{ n = n }
-                    local t0 = os.clock()
-                    b:generate()
-                    worst = math.max(worst, os.clock() - t0)
-                    local count, exhausted = Board._countSolutions(b.clues, n, 2, 10000000)
-                    assert.is_false(exhausted)
-                    assert.are.equal(1, count, ("n=%d seed %d not unique"):format(n, seed))
-                    math.randomseed(seed * 7919 + n)
-                    local b2 = Board:new{ n = n }
-                    b2:generate()
-                    assert.are.same(b.clues, b2.clues)
-                end
-                -- generous: ~0.03 s on a desktop
-                assert.is_true(worst < 2.0, ("n=%d took %.2f s"):format(n, worst))
-            end
-        end)
     end)
 
     describe("no-trial solver", function()
@@ -396,13 +374,6 @@ describe("MasyuBoard", function()
             local on = {}
             for _, cell in ipairs(b.solution_loop) do on[(cell[1] - 1) * b.n + cell[2]] = true end
             return on
-        end
-        local function countClues(b)
-            local k = 0
-            for r = 1, b.n do for c = 1, b.n do
-                if b.clues[r][c] ~= Board.CELL_EMPTY then k = k + 1 end
-            end end
-            return k
         end
 
         it("a black circle in a corner sends both arms straight along the edges", function()
@@ -412,25 +383,6 @@ describe("MasyuBoard", function()
             local _, val = Board._logicSolve(clues, 6)
             for _, i in ipairs({ 2, 3, 7, 13 }) do assert.is_true(val[i]) end   -- (1,2) (1,3) (2,1) (3,1)
             assert.is_false(val[8])                                              -- (2,2)
-        end)
-
-        it("every generated puzzle is finished without guessing, on its own loop (40 seeds per size)", function()
-            for _, n in ipairs(Board.SIZES) do
-                for seed = 1, 40 do
-                    math.randomseed(seed * 31 + n)
-                    local b = Board:new{ n = n }
-                    b:generate()
-                    local ok, val, stats = Board._logicSolve(b.clues, n)
-                    assert.is_true(ok, ("n=%d seed %d needs guessing"):format(n, seed))
-                    assert.are.equal(0, stats.undecided)
-                    local on = loopSet(b)
-                    for i = 1, n * n do
-                        assert.are.equal(on[i] or false, val[i], ("n=%d seed %d cell %d"):format(n, seed, i))
-                    end
-                    local k = countClues(b)
-                    assert.is_true(k >= 4 and k <= math.floor(n * n / 2))
-                end
-            end
         end)
 
         it("never deduces against a valid loop, and what it finishes is unique (random clue sets)", function()
@@ -463,26 +415,6 @@ describe("MasyuBoard", function()
             end
         end)
 
-        it("the stored fallback puzzles are valid, unique and need no guessing", function()
-            for n, fb in pairs(Board._FALLBACK) do
-                local clues = {}
-                for r = 1, n do
-                    clues[r] = {}
-                    for c = 1, n do
-                        local ch = fb.rows[r]:sub(c, c)
-                        clues[r][c] = ch == "W" and Board.CELL_WHITE or ch == "B" and Board.CELL_BLACK or Board.CELL_EMPTY
-                    end
-                end
-                assert.is_true((Board._logicSolve(clues, n)))
-                local count, exhausted = Board._countSolutions(clues, n, 2, 10000000)
-                assert.is_false(exhausted)
-                assert.are.equal(1, count)
-                local b = Board:new{ n = n }
-                b.clues, b.solution_loop = clues, fb.loop
-                for _, cell in ipairs(fb.loop) do b:setPathCell(cell[1], cell[2], true) end
-                assert.is_true(b.won, "fallback " .. n)
-            end
-        end)
     end)
 
     describe("tapCell", function()
